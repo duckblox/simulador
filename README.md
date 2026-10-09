@@ -2,7 +2,7 @@
 
 > **Mire, atire, decole e explore.**
 
-## ▶️ [**JOGAR AGORA → duckblox.github.io/simulador**](https://github.io)
+## ▶️ [**JOGAR AGORA → duckblox.github.io/simulador**](https://duckblox.github.io/simulador)
 
 *Abra o link no navegador do celular, tablet ou computador. Não precisa instalar nada, baixar nada nem criar conta.*
 
