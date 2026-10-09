@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!--
   ╔══════════════════════════════════════════════════════════════╗
-  ║  🚀 COCKPIT GALÁCTICO — EDIÇÃO APRENDIZ                      ║
+  ║  🚀 COCKPIT GALÁCTICO — EDIÇÃO APRENDIZ (versão adaptável)   ║
   ╠══════════════════════════════════════════════════════════════╣
   ║  Como usar:  1) Abra este arquivo no VS Code ou Bloco de     ║
   ║                 Notas.  2) Mude um número.  3) Salve (Ctrl+S)║
@@ -11,6 +11,9 @@
   ║   HTML = o esqueleto (o que existe na página)                ║
   ║   CSS  = a roupa (cores, tamanhos)                           ║
   ║   JavaScript = o cérebro (o que acontece, o jogo!)           ║
+  ║                                                              ║
+  ║  NOVIDADE: o jogo testa o computador sozinho e se ajusta.    ║
+  ║  No painel há NEON, AUTO e o botão DETALHE para você mexer.  ║
   ╚══════════════════════════════════════════════════════════════╝
 -->
 <html lang="pt-BR">
@@ -26,6 +29,7 @@
   #inicio { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
             background: rgba(0,0,8,.88); text-align: center; padding: 20px; }
   #inicio[hidden] { display: none; }   /* quando tem "hidden", a tela de início some */
+  #inicio small { color: #9aa3c7; margin-top: 14px; max-width: 460px; line-height: 1.4; }
   #botaoIniciar { margin-top: 16px; font: 700 20px system-ui; padding: 14px 34px; background: #00ffcc; border: 0; border-radius: 12px; cursor: pointer; }
 </style>
 </head>
@@ -37,6 +41,8 @@
   <h1>🚀 COCKPIT GALÁCTICO</h1>
   <p>Mire com o mouse. Clique para atirar.<br>Arraste a alavanca e os botões do painel!</p>
   <button id="botaoIniciar">Decolar</button>
+  <small>O jogo testa seu computador e liga o modo leve sozinho se precisar.
+  Se ainda ficar pesado, desligue o NEON e abaixe o botão DETALHE no painel.</small>
 </div>
 
 <script>
@@ -49,6 +55,8 @@
    • for       = repetir algo várias vezes
    • loop      = a função que roda ~60 vezes por segundo (cada vez = 1 quadro)
    • canvas    = a folha onde desenhamos tudo
+   • try/catch = "tente fazer isso; se der erro, faça aquilo em vez de quebrar"
+   • FPS       = quadros por segundo (60 = bem fluido, abaixo de 30 = travando)
    ════════════════════════════════════════════════════════════════ */
 
 
@@ -65,6 +73,7 @@ const CONFIG = {
   numeroDeEstrelas: 400,       // 🎯 Tente 50 (vazio) ou 1500 (cheio)
   danoDoEscudo: 0.18,          // 🎯 Tente 0 para ser invencível
   recargaDoTiro: 230,          // 🎯 Milissegundos entre tiros. Tente 80!
+  fpsMinimo: 40,               // 🎯 Se o jogo rodar abaixo disso, o modo AUTO desliga efeitos pesados
   // 🎯 As falas do computador de bordo. Escreva o que quiser!
   falas: {
     inicio:    'Sistemas online. Bem-vindo, piloto.',
@@ -81,7 +90,19 @@ const CONFIG = {
    2️⃣  PREPARAÇÃO — pegar a folha de desenho e medir a tela
    ════════════════════════════════════════════════════════════════ */
 const tela = document.getElementById('tela');   // procura no HTML o elemento com id="tela"
-const pincel = tela.getContext('2d');           // o "pincel": tudo que desenhamos usa ele
+const pincel = tela.getContext('2d', { alpha: false });   // o "pincel". alpha:false = "a folha não é transparente" (mais rápido)
+
+// Navegadores antigos não sabem desenhar retângulos arredondados (roundRect).
+// Sem isso o jogo daria erro e congelaria. Aqui ensinamos o truque a eles:
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+    r = Math.min(r || 0, w / 2, h / 2);
+    this.moveTo(x + r, y);
+    this.arcTo(x + w, y, x + w, y + h, r); this.arcTo(x + w, y + h, x, y + h, r);
+    this.arcTo(x, y + h, x, y, r);         this.arcTo(x, y, x + w, y, r);
+    this.closePath();
+  };
+}
 
 // Variáveis de tamanho (preenchidas na função ajustaTela)
 let largura, altura;     // tamanho da janela
@@ -121,10 +142,13 @@ const nave = {
   energia: 1,           // gasta ao atirar, recarrega sozinha
   botaoEscudo: 0.6,     // botão giratório: quão rápido o escudo se recupera
   botaoSensor: 0.5,     // botão giratório: alcance do radar e tamanho da mira
+  botaoDetalhe: 1,      // botão giratório: quantidade de estrelas/galáxias (1 = tudo, 0 = quase nada)
   luzLigada: true,      // interruptor da luz da cabine
   luz: 1,               // brilho atual da luz (suaviza ao ligar/desligar)
   vozLigada: true,
-  somLigado: true
+  somLigado: true,
+  neonLigado: true,     // interruptor: brilho neon (bonito, mas pesado em computadores simples)
+  autoLigado: true      // interruptor: o jogo reduz os efeitos sozinho se ficar lento
 };
 let camX = 0, camY = 0;      // para onde a nave está "olhando"
 let rumo = 0;                // graus da bússola (0 = Norte)
@@ -142,25 +166,38 @@ const galaxias = [];   // galáxias espirais ao fundo
 
 const aleatorio = Math.random;  // sorteia número entre 0 e 1
 
+// Quantas estrelas estão ativas agora (o botão DETALHE controla isso)
+const estrelasAtivas = () => Math.ceil(estrelas.length * (0.15 + 0.85 * nave.botaoDetalhe));
+
+// Liga/desliga o brilho neon: todo desenho que brilha passa por aqui.
+function neon(cor, forca) {
+  pincel.shadowColor = cor;
+  pincel.shadowBlur = nave.neonLigado ? forca : 0;
+}
+
 
 /* ════════════════════════════════════════════════════════════════
    4️⃣  SOM E VOZ
    ════════════════════════════════════════════════════════════════ */
 let audio;  // o "sistema de som" do navegador (só liga depois de um clique)
+let vozDisponivel = true;   // vira false se o computador não tiver nenhuma voz instalada
+if ('speechSynthesis' in window) speechSynthesis.getVoices();   // "acorda" a lista de vozes (alguns navegadores carregam devagar)
 
 // Cria um bipe: sobe ou desce de uma frequência (a) até outra (b).
 function bipe(a, b, duracao, tipo, volume) {
   if (!nave.somLigado || !audio) return;          // se o som estiver desligado, para aqui
-  const osc = audio.createOscillator();           // gerador de onda sonora
-  const vol = audio.createGain();                 // controle de volume
-  const agora = audio.currentTime;
-  osc.type = tipo;                                // 'sine' suave, 'square' retrô, 'sawtooth' laser
-  osc.frequency.setValueAtTime(a, agora);
-  osc.frequency.exponentialRampToValueAtTime(b, agora + duracao);
-  vol.gain.setValueAtTime(volume, agora);
-  vol.gain.exponentialRampToValueAtTime(0.0001, agora + duracao);  // some devagar
-  osc.connect(vol); vol.connect(audio.destination);
-  osc.start(agora); osc.stop(agora + duracao);
+  try {
+    const osc = audio.createOscillator();         // gerador de onda sonora
+    const vol = audio.createGain();               // controle de volume
+    const agora = audio.currentTime;
+    osc.type = tipo;                              // 'sine' suave, 'square' retrô, 'sawtooth' laser
+    osc.frequency.setValueAtTime(a, agora);
+    osc.frequency.exponentialRampToValueAtTime(b, agora + duracao);
+    vol.gain.setValueAtTime(volume, agora);
+    vol.gain.exponentialRampToValueAtTime(0.0001, agora + duracao);  // some devagar
+    osc.connect(vol); vol.connect(audio.destination);
+    osc.start(agora); osc.stop(agora + duracao);
+  } catch (erro) { /* se o som falhar, o jogo continua sem som */ }
 }
 
 let ultimaFala = 0;
@@ -170,13 +207,122 @@ function falar(texto, forcar) {
   if (!forcar && agora - ultimaFala < 3500) return;   // evita falar sem parar
   ultimaFala = agora;
   legenda = texto; tempoLegenda = 200;
-  if (!nave.vozLigada || !('speechSynthesis' in window)) return;
-  const fala = new SpeechSynthesisUtterance(texto);
-  fala.lang = 'pt-BR';
-  fala.pitch = 0.35;     // 🎯 Tom da voz: 0 = grave, 2 = agudo
-  fala.rate = 0.9;       // 🎯 Velocidade: 0.5 = lenta, 2 = rápida
-  speechSynthesis.cancel();
-  speechSynthesis.speak(fala);
+  if (!nave.vozLigada || !vozDisponivel || !('speechSynthesis' in window)) return;
+  try {
+    const fala = new SpeechSynthesisUtterance(texto);
+    fala.lang = 'pt-BR';
+    const vozes = speechSynthesis.getVoices();
+    const vozPt = vozes.find((v) => v.lang && v.lang.toLowerCase().startsWith('pt'));   // procura uma voz em português
+    if (vozPt) fala.voice = vozPt;
+    fala.pitch = 0.35;     // 🎯 Tom da voz: 0 = grave, 2 = agudo
+    fala.rate = 0.9;       // 🎯 Velocidade: 0.5 = lenta, 2 = rápida
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+    speechSynthesis.speak(fala);
+  } catch (erro) { nave.vozLigada = false; }   // se a voz der erro, desliga e segue o jogo
+}
+
+
+/* ════════════════════════════════════════════════════════════════
+   🛠️  AJUSTE AUTOMÁTICO — o jogo testa o computador e se adapta
+   Três proteções:
+   1) Na decolagem: detecta se NÃO há placa de vídeo ativa (modo "software"),
+      se NÃO há vozes instaladas, e se é Linux (onde a voz às vezes trava).
+   2) Durante o jogo: mede o FPS. Se ficar baixo, desliga o neon e depois
+      diminui as estrelas (só se o interruptor AUTO estiver ligado).
+   3) Se a voz congelar o jogo por mais de meio segundo, ela é desligada.
+   Suas escolhas ficam salvas no navegador para a próxima vez.
+   ════════════════════════════════════════════════════════════════ */
+const CHAVE_SALVA = 'cockpit-config-v1';
+const CAMPOS_SALVOS = ['neonLigado', 'autoLigado', 'botaoDetalhe', 'vozLigada', 'somLigado', 'luzLigada'];
+
+function salvaConfig() {
+  try {
+    const guardar = {};
+    CAMPOS_SALVOS.forEach((campo) => { guardar[campo] = nave[campo]; });
+    localStorage.setItem(CHAVE_SALVA, JSON.stringify(guardar));
+  } catch (erro) { /* alguns navegadores bloqueiam o salvamento: sem problema */ }
+}
+function carregaConfig() {
+  try { return JSON.parse(localStorage.getItem(CHAVE_SALVA)); } catch (erro) { return null; }
+}
+
+// Pergunta ao navegador o que este computador tem.
+function detectaRecursos() {
+  const r = { softwareGrafico: false, temVoz: false, linux: false, nomeGpu: '' };
+  try {
+    const folha = document.createElement('canvas');
+    const gl = folha.getContext('webgl') || folha.getContext('experimental-webgl');
+    if (!gl) {
+      r.softwareGrafico = true;                      // sem WebGL = provavelmente sem aceleração de vídeo
+    } else {
+      const info = gl.getExtension('WEBGL_debug_renderer_info');
+      if (info) {
+        r.nomeGpu = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || '');
+        // "llvmpipe" e "SwiftShader" são desenhistas por software (a CPU faz o trabalho da placa de vídeo)
+        if (/swiftshader|llvmpipe|softpipe|software/i.test(r.nomeGpu)) r.softwareGrafico = true;
+      }
+      const perder = gl.getExtension('WEBGL_lose_context');
+      if (perder) perder.loseContext();
+    }
+  } catch (erro) { /* se o teste falhar, seguimos sem conclusão */ }
+  try { r.temVoz = 'speechSynthesis' in window && speechSynthesis.getVoices().length > 0; } catch (erro) {}
+  const ua = navigator.userAgent;
+  r.linux = /Linux/.test(ua) && !/Android/.test(ua);   // Android também diz "Linux", por isso excluímos
+  return r;
+}
+
+// Aplica o resultado do teste. Devolve um aviso curto (ou '') para mostrar na tela.
+function configuraAutomatico() {
+  const r = detectaRecursos();
+  let aviso = '';
+  if (!r.temVoz) { vozDisponivel = false; nave.vozLigada = false; aviso = 'Sem voz instalada. Modo mudo.'; }
+  else if (r.linux) { nave.vozLigada = false; aviso = 'Voz desligada. Ligue no painel.'; }
+  if (r.softwareGrafico) { nave.neonLigado = false; nave.botaoDetalhe = 0.5; aviso = 'Modo leve ativado.'; }
+
+  const salvo = carregaConfig();                      // o que você escolheu da última vez vale mais que o teste
+  if (salvo) CAMPOS_SALVOS.forEach((campo) => { if (campo in salvo) nave[campo] = salvo[campo]; });
+  if (!vozDisponivel) nave.vozLigada = false;
+  return aviso;
+}
+
+// Medidor de FPS
+let fpsAtual = 0, somaQuadros = 0, contaQuadros = 0, mediasLentas = 0;
+function vigiaDesempenho(intervalo) {   // intervalo = milissegundos desde o quadro anterior
+  if (!jogando) return;
+
+  // Proteção da voz: quadro demorou > 0,6 s e a voz tinha acabado de falar? Foi ela que travou.
+  if (intervalo > 600 && nave.vozLigada && performance.now() - ultimaFala < intervalo + 1000) {
+    nave.vozLigada = false; salvaConfig();
+    falar('Voz travava o jogo. Desligada.', true);
+    return;
+  }
+
+  if (intervalo > 250) return;          // ignora pausas grandes (ex.: trocou de aba)
+  somaQuadros += intervalo; contaQuadros++;
+  if (contaQuadros < 90) return;        // a cada 90 quadros calcula uma média
+  fpsAtual = 1000 / (somaQuadros / contaQuadros);
+  somaQuadros = 0; contaQuadros = 0;
+
+  if (nave.autoLigado && fpsAtual < CONFIG.fpsMinimo) {
+    mediasLentas++;
+    if (mediasLentas >= 2) { reduzEfeitos(); mediasLentas = 0; }   // só age se ficar lento 2 vezes seguidas
+  } else mediasLentas = 0;
+}
+
+// Tira efeitos pesados, um passo de cada vez.
+function reduzEfeitos() {
+  if (nave.neonLigado) { nave.neonLigado = false; falar('Modo leve: neon desligado.', true); }
+  else if (nave.botaoDetalhe > 0.3) { nave.botaoDetalhe = Math.max(0.2, nave.botaoDetalhe - 0.25); falar('Modo leve: menos estrelas.', true); }
+  else return;
+  salvaConfig();
+}
+
+// Liga/desliga um interruptor do painel (respeitando as regras acima).
+function alternaChave(chave) {
+  if (!jogando) return;
+  if (chave === 'vozLigada' && !vozDisponivel) { falar('Sem voz neste computador.', true); return; }
+  nave[chave] = !nave[chave];
+  salvaConfig();
 }
 
 
@@ -245,7 +391,9 @@ function atualiza(dt) {   // dt = quanto tempo passou (1 = um quadro normal de 6
   rumo = (rumo + viraX * 0.5 * dt + 360) % 360;
 
   // Estrelas vêm na sua direção (z diminui). Se passam de você, voltam para o fundo.
-  for (const e of estrelas) {
+  const quantas = estrelasAtivas();
+  for (let i = 0; i < quantas; i++) {
+    const e = estrelas[i];
     e.z -= rapidez * dt;
     if (e.z < 30) { e.z = 3000; e.x = aleatorio() * 4000 - 2000 + camX; e.y = aleatorio() * 4000 - 2000 + camY; }
   }
@@ -332,7 +480,7 @@ function desenhaNaveInimiga(x, y, tam, ini) {
   pincel.rotate(Math.sin(tempo / 40 + ini.fase) * 0.3);   // inclina de lado (voo de verdade!)
   pincel.scale(tam, tam);                          // todas as medidas abaixo são frações do tamanho
   const cor = `hsl(${CONFIG.corInimigo},100%,62%)`;
-  pincel.shadowColor = cor; pincel.shadowBlur = 18;        // brilho neon
+  neon(cor, 18);                                   // brilho neon (some se o interruptor NEON estiver desligado)
   pincel.fillStyle = '#232842'; pincel.strokeStyle = cor; pincel.lineWidth = 2 / tam;
   pincel.beginPath();                              // desenhar um polígono ligando pontos: o "corpo"
   pincel.moveTo(0, -0.35); pincel.lineTo(0.6, 0.3); pincel.lineTo(0.25, 0.18);
@@ -346,20 +494,24 @@ function desenhaNaveInimiga(x, y, tam, ini) {
 function desenhaEspaco() {
   pincel.fillStyle = '#020207'; pincel.fillRect(0, 0, largura, altura);          // fundo quase preto
 
-  for (const g of galaxias) {                                                    // galáxias
-    const sx = centroX + volta(g.x - camX, 8000) * foco / g.z;
-    const sy = centroY + volta(g.y - camY, 4000) * foco / g.z;
-    const tam = g.tamanho * foco / g.z;
-    pincel.save();
-    pincel.globalAlpha = Math.min(1, (g.z - 800) / 700);                         // vai sumindo quando chega perto
-    pincel.translate(sx, sy); pincel.rotate(g.giro); pincel.scale(1, 0.55);      // achatada = inclinada
-    pincel.drawImage(g.imagem, -tam / 2, -tam / 2, tam, tam);
-    pincel.restore();
+  if (nave.botaoDetalhe > 0.3) {                                                 // galáxias (somem no detalhe baixo)
+    for (const g of galaxias) {
+      const sx = centroX + volta(g.x - camX, 8000) * foco / g.z;
+      const sy = centroY + volta(g.y - camY, 4000) * foco / g.z;
+      const tam = g.tamanho * foco / g.z;
+      pincel.save();
+      pincel.globalAlpha = Math.min(1, (g.z - 800) / 700);                       // vai sumindo quando chega perto
+      pincel.translate(sx, sy); pincel.rotate(g.giro); pincel.scale(1, 0.55);    // achatada = inclinada
+      pincel.drawImage(g.imagem, -tam / 2, -tam / 2, tam, tam);
+      pincel.restore();
+    }
   }
 
   const rapidez = 3 + nave.velocidade * 38;
   pincel.lineCap = 'round';
-  for (const e of estrelas) {                                                    // estrelas viram RISCOS de luz
+  const quantas = estrelasAtivas();
+  for (let i = 0; i < quantas; i++) {                                            // estrelas viram RISCOS de luz
+    const e = estrelas[i];
     const dx = volta(e.x - camX, 4000), dy = volta(e.y - camY, 4000);
     const x = centroX + dx * foco / e.z, y = centroY + dy * foco / e.z;
     const brilho = 1 - e.z / 3000;                                               // mais perto = mais brilhante
@@ -394,7 +546,7 @@ function desenhaEspaco() {
 
   if (raioTiro > 0) {                                                            // lasers saem dos cantos da cabine
     const alvoX = alvoTravado ? alvoTravado.sx : mira.x, alvoY = alvoTravado ? alvoTravado.sy : mira.y;
-    pincel.save(); pincel.strokeStyle = '#5ff'; pincel.shadowColor = '#0ff'; pincel.shadowBlur = 14; pincel.lineWidth = 4;
+    pincel.save(); pincel.strokeStyle = '#5ff'; neon('#0ff', 14); pincel.lineWidth = 4;
     pincel.beginPath();
     pincel.moveTo(largura * 0.14, alturaVisao); pincel.lineTo(alvoX, alvoY);
     pincel.moveTo(largura * 0.86, alturaVisao); pincel.lineTo(alvoX, alvoY);
@@ -424,7 +576,7 @@ function moldura(x, y, r) {                                // o aro metálico re
 }
 function lampada(x, y, ligada, cor) {                      // uma luzinha que acende e apaga
   pincel.save(); pincel.fillStyle = ligada ? cor : '#2a2d3d';
-  if (ligada) { pincel.shadowColor = cor; pincel.shadowBlur = 12 * escala; }
+  if (ligada) neon(cor, 12 * escala);
   pincel.beginPath(); pincel.arc(px(x), py(y), 6 * escala, 0, 6.3); pincel.fill(); pincel.restore();
 }
 function barra(x, y, largBarra, valor, cor, nome) {        // barra de nível (escudo, energia). valor vai de 0 a 1
@@ -533,6 +685,12 @@ function desenhaInterruptor(x, y, ligado, nome, cor) {      // 📚 ligado/desli
   texto(nome, x, y + 34, 9, '#9aa3c7');
 }
 
+function desenhaFps() {                                     // mostrador do FPS (quadros por segundo)
+  const ok = fpsAtual === 0 || fpsAtual >= CONFIG.fpsMinimo;
+  texto('FPS', 960, 190, 9, '#9aa3c7');
+  texto(fpsAtual ? String(Math.round(fpsAtual)) : '--', 960, 214, 16, ok ? '#7dff6a' : '#ff9f1a');
+}
+
 // ─── 8.4 O PAINEL INTEIRO + A MOLDURA DA CABINE ───
 function desenhaPainel() {
   const fundo = pincel.createLinearGradient(0, alturaVisao, 0, altura);   // degradê: do cinza-azulado ao preto
@@ -549,11 +707,16 @@ function desenhaPainel() {
   lampada(620, 50, perto, '#ff3355'); texto('ALERTA', 620, 70, 8, '#9aa3c7');
   barra(610, 92, 160, nave.escudo, '#00e5ff', 'ESCUDO');
   barra(610, 132, 160, nave.energia, '#ffd23f', 'ENERGIA');
-  desenhaBotao(650, 200, 'botaoEscudo', 'REGEN.'); desenhaBotao(740, 200, 'botaoSensor', 'SENSOR');
+  desenhaBotao(630, 200, 'botaoEscudo', 'REGEN.');
+  desenhaBotao(705, 200, 'botaoSensor', 'SENSOR');
+  desenhaBotao(780, 200, 'botaoDetalhe', 'DETALHE');
   desenhaAlavanca();
-  desenhaInterruptor(925, 75, nave.luzLigada, 'LUZ', '#ffd23f');
-  desenhaInterruptor(925, 140, nave.vozLigada, 'VOZ', '#7dff6a');
-  desenhaInterruptor(925, 205, nave.somLigado, 'SOM', '#7dff6a');
+  desenhaInterruptor(900, 70,  nave.luzLigada,  'LUZ',  '#ffd23f');
+  desenhaInterruptor(960, 70,  nave.vozLigada,  'VOZ',  '#7dff6a');
+  desenhaInterruptor(900, 135, nave.somLigado,  'SOM',  '#7dff6a');
+  desenhaInterruptor(960, 135, nave.neonLigado, 'NEON', '#ff66cc');
+  desenhaInterruptor(900, 200, nave.autoLigado, 'AUTO', '#00e5ff');
+  desenhaFps();
 }
 
 function desenhaCabine() {                                  // as colunas e o teto da nave, por cima do espaço
@@ -587,12 +750,15 @@ function desenhaCabine() {                                  // as colunas e o te
    ════════════════════════════════════════════════════════════════ */
 // Lista de peças clicáveis do painel (posições na grade 1000x260)
 const CONTROLES = [
-  { tipo: 'botao', chave: 'botaoEscudo', x: 650, y: 200, r: 36 },
-  { tipo: 'botao', chave: 'botaoSensor', x: 740, y: 200, r: 36 },
+  { tipo: 'botao', chave: 'botaoEscudo',  x: 630, y: 200, r: 36 },
+  { tipo: 'botao', chave: 'botaoSensor',  x: 705, y: 200, r: 36 },
+  { tipo: 'botao', chave: 'botaoDetalhe', x: 780, y: 200, r: 36 },
   { tipo: 'alavanca', x: 850, topo: 55, fundo: 235 },
-  { tipo: 'chave', chave: 'luzLigada', x: 925, y: 75 },
-  { tipo: 'chave', chave: 'vozLigada', x: 925, y: 140 },
-  { tipo: 'chave', chave: 'somLigado', x: 925, y: 205 }
+  { tipo: 'chave', chave: 'luzLigada',  x: 900, y: 70 },
+  { tipo: 'chave', chave: 'vozLigada',  x: 960, y: 70 },
+  { tipo: 'chave', chave: 'somLigado',  x: 900, y: 135 },
+  { tipo: 'chave', chave: 'neonLigado', x: 960, y: 135 },
+  { tipo: 'chave', chave: 'autoLigado', x: 900, y: 200 }
 ];
 let segurando = null;   // qual peça está sendo arrastada agora
 
@@ -601,7 +767,7 @@ const paraGrade = (e) => [(e.clientX - (largura / 2 - 500 * escala)) / escala, (
 function acharPeca(e) {                                      // qual peça está debaixo do mouse?
   const [gx, gy] = paraGrade(e);
   return CONTROLES.find((c) => c.tipo === 'alavanca'
-    ? Math.abs(gx - c.x) < 28 && gy > c.topo - 14 && gy < c.fundo + 14
+    ? Math.abs(gx - c.x) < 24 && gy > c.topo - 14 && gy < c.fundo + 14
     : Math.hypot(gx - c.x, gy - c.y) < (c.r || 26));
 }
 function moverPeca(c, e) {                                   // arrastando: transforma a posição do mouse em um valor de 0 a 1
@@ -618,7 +784,7 @@ tela.addEventListener('pointerdown', (e) => {                // apertou o mouse 
   if (e.clientY > alturaVisao) {                             // clicou no painel
     const peca = acharPeca(e);
     if (!peca) return;
-    if (peca.tipo === 'chave') { nave[peca.chave] = !nave[peca.chave]; bipe(300, 200, 0.08, 'square', 0.05); }   // ! inverte true/false
+    if (peca.tipo === 'chave') { alternaChave(peca.chave); bipe(300, 200, 0.08, 'square', 0.05); }
     else { segurando = peca; moverPeca(peca, e); }
   } else {                                                   // clicou no espaço: mirar e atirar
     mira.x = e.clientX; mira.y = e.clientY; atirando = true; atira();
@@ -628,20 +794,28 @@ tela.addEventListener('pointermove', (e) => {
   if (segurando) moverPeca(segurando, e);
   else if (e.clientY < alturaVisao) { mira.x = e.clientX; mira.y = e.clientY; }
 });
-window.addEventListener('pointerup', () => { segurando = null; atirando = false; });
-window.addEventListener('keydown', (e) => {                  // teclado: Espaço atira, L luz, V voz
+window.addEventListener('pointerup', () => {
+  if (segurando) salvaConfig();                              // soltou um botão: guarda sua escolha
+  segurando = null; atirando = false;
+});
+window.addEventListener('keydown', (e) => {                  // teclado: Espaço atira, L luz, V voz, N neon
   const tecla = e.key.toLowerCase();
   if (tecla === ' ') { e.preventDefault(); atirando = true; }
-  if (tecla === 'l') nave.luzLigada = !nave.luzLigada;
-  if (tecla === 'v') nave.vozLigada = !nave.vozLigada;
+  if (tecla === 'l') alternaChave('luzLigada');
+  if (tecla === 'v') alternaChave('vozLigada');
+  if (tecla === 'n') alternaChave('neonLigado');
 });
 window.addEventListener('keyup', (e) => { if (e.key === ' ') atirando = false; });
 
 document.getElementById('botaoIniciar').onclick = () => {
-  audio = new (window.AudioContext || window.webkitAudioContext)();   // navegadores só liberam o som depois de um clique
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();   // navegadores só liberam o som depois de um clique
+  } catch (erro) { audio = null; nave.somLigado = false; }
+  const aviso = configuraAutomatico();                                  // 🛠️ testa o computador e ajusta o jogo
   document.getElementById('inicio').hidden = true;
   jogando = true;
   falar(CONFIG.falas.inicio, true);
+  if (aviso) setTimeout(() => falar(aviso, true), 2800);                // mostra o aviso logo depois da saudação
 };
 
 
@@ -651,17 +825,31 @@ document.getElementById('botaoIniciar').onclick = () => {
    É como um flipbook: 60 desenhos por segundo viram movimento!
    ════════════════════════════════════════════════════════════════ */
 let ultimoQuadro = performance.now();
+let jaMostrouErro = false;
 function loop(agora) {
-  const dt = Math.min((agora - ultimoQuadro) / 16.667, 3);   // tempo desde o último quadro (assim o jogo roda igual em PC rápido ou lento)
+  requestAnimationFrame(loop); // pede o PRÓXIMO quadro logo de cara: se algo der erro, o jogo não congela de vez
+  const intervalo = Math.max(0, agora - ultimoQuadro);      // milissegundos desde o último quadro
+  const dt = Math.min(intervalo / 16.667, 3);               // assim o jogo roda igual em PC rápido ou lento
   ultimoQuadro = agora;
-  if (jogando) atualiza(dt);   // 1) regras  2) espaço  3) cabine  4) painel — a ordem é a das camadas
-  desenhaEspaco();
-  desenhaCabine();
-  desenhaPainel();
-  requestAnimationFrame(loop); // pede ao navegador: "chame o loop de novo no próximo quadro"
+  vigiaDesempenho(intervalo);                               // 🛠️ mede o FPS e protege contra travadas
+  try {
+    if (jogando) atualiza(dt);   // 1) regras  2) espaço  3) cabine  4) painel — a ordem é a das camadas
+    desenhaEspaco();
+    desenhaCabine();
+    desenhaPainel();
+  } catch (erro) {
+    if (!jaMostrouErro) { console.error('Erro no jogo:', erro); jaMostrouErro = true; }
+  }
 }
 requestAnimationFrame(loop);
 
+/* 🎓 PRÓXIMOS DESAFIOS (quando se sentir pronto):
+   1. Crie um novo botão giratório (copie desenhaBotao e adicione na lista CONTROLES).
+   2. Faça um 2º tipo de inimigo, mais rápido e de outra cor.
+   3. Adicione uma fala nova em CONFIG.falas e use falar() em algum momento.
+   4. Mude o painel todo para a cor rosa só trocando UMA linha.
+   5. Mude CONFIG.fpsMinimo para 55 e veja o modo AUTO ficar bem mais "sensível".
+*/
 </script>
 </body>
 </html>
